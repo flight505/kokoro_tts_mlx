@@ -1,0 +1,32 @@
+{
+  "short": {
+    "chars": 29,
+    "direct_mean_s": 0.577475658597541,
+    "generate_mean_s": 0.5691825913963839,
+    "stream_mean_s": 0.5768670329998713,
+    "synthesize_mean_s": 0.5724539581948193,
+    "generate_overhead_pct": -1.4360894831996318,
+    "stream_overhead_pct": -0.10539415620527404,
+    "synthesize_overhead_pct": -0.8695951643948874
+  },
+  "medium": {
+    "chars": 160,
+    "direct_mean_s": 2.6701265831972707,
+    "generate_mean_s": 2.6524958168010926,
+    "stream_mean_s": 2.690010449997499,
+    "synthesize_mean_s": 2.91056256640004,
+    "generate_overhead_pct": -0.6602970251345375,
+    "stream_overhead_pct": 0.7446788075649469,
+    "synthesize_overhead_pct": 9.004666097697346
+  },
+  "long": {
+    "chars": 530,
+    "direct_mean_s": 8.552262791604154,
+    "generate_mean_s": 8.706086441801745,
+    "stream_mean_s": 9.608572233398444,
+    "synthesize_mean_s": 10.269175749801798,
+    "generate_overhead_pct": 1.7986310049850296,
+    "stream_overhead_pct": 12.351227593605763,
+    "synthesize_overhead_pct": 20.075540240451396
+  }
+}

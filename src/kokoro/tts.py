@@ -1,13 +1,22 @@
-"""Clean wrapper around mlx-audio's Kokoro TTS implementation."""
+"""Clean wrapper around mlx-audio's Kokoro TTS implementation.
+
+Provides three API levels:
+- generate(): Zero overhead, direct passthrough to mlx-audio
+- stream(): Low overhead, yields TTSResult per segment
+- synthesize(): Convenient, returns single TTSResult with concatenated audio
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator, Literal
+from typing import TYPE_CHECKING, Generator, Literal
 
 import mlx.core as mx
 
+if TYPE_CHECKING:
+    from mlx_audio.tts.models.kokoro import Model
 
-@dataclass
+
+@dataclass(slots=True)
 class TTSResult:
     """Result from TTS generation."""
 
@@ -22,16 +31,26 @@ class KokoroTTS:
     """
     Kokoro Text-to-Speech wrapper.
 
-    A simple interface to mlx-audio's Kokoro implementation
-    optimized for Apple Silicon.
+    Provides multiple API levels for different performance needs:
 
-    Example:
+    - generate(): Zero overhead passthrough to mlx-audio
+    - stream(): Low overhead streaming with TTSResult metadata
+    - synthesize(): Convenient single-call with concatenated audio
+
+    Example (zero overhead):
+        >>> tts = KokoroTTS()
+        >>> for result in tts.generate("Hello"):
+        ...     audio = result.audio  # Raw mlx-audio GenerationResult
+
+    Example (convenient):
         >>> tts = KokoroTTS()
         >>> result = tts.synthesize("Hello, world!")
         >>> tts.save(result.audio, "output.wav")
     """
 
     DEFAULT_MODEL = "mlx-community/Kokoro-82M-bf16"
+
+    __slots__ = ("model_id", "default_voice", "lang", "_model", "_sample_rate")
 
     def __init__(
         self,
@@ -43,7 +62,7 @@ class KokoroTTS:
         Initialize Kokoro TTS.
 
         Args:
-            model_id: HuggingFace model ID
+            model_id: HuggingFace model ID (supports bf16, 8bit, 4bit variants)
             voice: Default voice (e.g., "af_heart", "am_adam")
             lang: Language code
                 - 'a': American English
@@ -54,31 +73,77 @@ class KokoroTTS:
         self.model_id = model_id
         self.default_voice = voice
         self.lang = lang
-        self._model = None
-        self._pipeline = None
+        self._model: "Model | None" = None
+        self._sample_rate: int = 24000  # Default, updated on load
 
-    def _ensure_loaded(self):
-        """Lazily load the model."""
+    def _ensure_loaded(self) -> "Model":
+        """Lazily load the model. Returns the model for chaining."""
         if self._model is None:
             import json
+
             import dacite
             from huggingface_hub import hf_hub_download
             from mlx_audio.tts.models.kokoro import Model, ModelConfig
 
-            # Download and load config
             config_path = hf_hub_download(self.model_id, "config.json")
             with open(config_path) as f:
                 config_dict = json.load(f)
 
-            # Create model from config
             model_config = dacite.from_dict(ModelConfig, config_dict)
             self._model = Model(model_config, repo_id=self.model_id)
+            self._sample_rate = self._model.sample_rate
+
+        return self._model
 
     @property
     def sample_rate(self) -> int:
         """Audio sample rate in Hz."""
         self._ensure_loaded()
-        return self._model.sample_rate
+        return self._sample_rate
+
+    @property
+    def model(self) -> "Model":
+        """Direct access to the underlying mlx-audio Model."""
+        return self._ensure_loaded()
+
+    def generate(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+    ):
+        """
+        Zero-overhead generation - direct passthrough to mlx-audio.
+
+        Use this when maximum performance is required. Returns the raw
+        mlx-audio GenerationResult objects with full metrics (RTF, timing, etc).
+
+        Args:
+            text: Text to synthesize
+            voice: Voice name (uses default if None)
+            speed: Speech speed multiplier (0.5-2.0)
+
+        Yields:
+            GenerationResult from mlx-audio with:
+                - audio: mx.array of audio samples
+                - real_time_factor: inference_time / audio_duration
+                - processing_time_seconds: time for this segment
+                - sample_rate: audio sample rate
+                - And more metrics...
+
+        Example:
+            >>> tts = KokoroTTS()
+            >>> for result in tts.generate("Hello world"):
+            ...     print(f"RTF: {result.real_time_factor:.2f}x")
+            ...     audio = result.audio
+        """
+        model = self._ensure_loaded()
+        return model.generate(
+            text,
+            voice=voice or self.default_voice,
+            speed=speed,
+            lang_code=self.lang,
+        )
 
     def synthesize(
         self,
@@ -87,7 +152,10 @@ class KokoroTTS:
         speed: float = 1.0,
     ) -> TTSResult:
         """
-        Synthesize speech from text.
+        Synthesize speech from text (convenient API).
+
+        Collects all audio segments and returns a single TTSResult.
+        For streaming or zero-overhead, use generate() or stream() instead.
 
         Args:
             text: Text to synthesize
@@ -95,42 +163,33 @@ class KokoroTTS:
             speed: Speech speed multiplier (0.5-2.0)
 
         Returns:
-            TTSResult with audio array and metadata
+            TTSResult with concatenated audio array and metadata
         """
-        self._ensure_loaded()
-
+        model = self._ensure_loaded()
+        sr = self._sample_rate  # Cache locally
         voice = voice or self.default_voice
 
-        # Collect all audio segments using model.generate()
-        all_audio = []
-
-        for result in self._model.generate(
-            text, voice=voice, speed=speed, lang_code=self.lang
-        ):
+        # Collect audio segments
+        segments = []
+        for result in model.generate(text, voice=voice, speed=speed, lang_code=self.lang):
             if result.audio is not None:
-                all_audio.append(result.audio)
+                segments.append(result.audio)
 
-        if not all_audio:
+        if not segments:
             raise ValueError("No audio generated")
 
-        # Concatenate audio segments
-        if len(all_audio) == 1:
-            combined_audio = all_audio[0]
+        # Single segment: no concatenation needed
+        if len(segments) == 1:
+            audio = segments[0]
         else:
-            combined_audio = mx.concatenate(all_audio, axis=-1)
-
-        # Flatten if needed
-        if combined_audio.ndim > 1:
-            combined_audio = combined_audio.flatten()
-
-        duration = len(combined_audio) / self.sample_rate
+            audio = mx.concatenate(segments, axis=-1)
 
         return TTSResult(
-            audio=combined_audio,
-            sample_rate=self.sample_rate,
+            audio=audio,
+            sample_rate=sr,
             text=text,
             phonemes=None,
-            duration_seconds=duration,
+            duration_seconds=audio.shape[-1] / sr,
         )
 
     def stream(
@@ -142,7 +201,8 @@ class KokoroTTS:
         """
         Stream audio generation segment by segment.
 
-        Useful for real-time playback of long texts.
+        Lower overhead than synthesize() - yields each segment as it's generated.
+        For zero overhead, use generate() instead.
 
         Args:
             text: Text to synthesize
@@ -152,24 +212,19 @@ class KokoroTTS:
         Yields:
             TTSResult for each segment
         """
-        self._ensure_loaded()
-
+        model = self._ensure_loaded()
+        sr = self._sample_rate  # Cache locally
         voice = voice or self.default_voice
 
-        for result in self._model.generate(
-            text, voice=voice, speed=speed, lang_code=self.lang
-        ):
+        for result in model.generate(text, voice=voice, speed=speed, lang_code=self.lang):
             if result.audio is not None:
                 audio = result.audio
-                if audio.ndim > 1:
-                    audio = audio.flatten()
-
                 yield TTSResult(
                     audio=audio,
-                    sample_rate=self.sample_rate,
-                    text=getattr(result, "graphemes", "") or "",
-                    phonemes=getattr(result, "phonemes", None),
-                    duration_seconds=len(audio) / self.sample_rate,
+                    sample_rate=sr,
+                    text="",
+                    phonemes=None,
+                    duration_seconds=audio.shape[-1] / sr,
                 )
 
     def save(
@@ -189,15 +244,15 @@ class KokoroTTS:
         import numpy as np
         import soundfile as sf
 
-        sample_rate = sample_rate or self.sample_rate
+        sr = sample_rate or self._sample_rate
         audio_np = np.array(audio)
 
-        # Normalize
+        # Normalize if needed
         max_val = np.abs(audio_np).max()
         if max_val > 1.0:
             audio_np = audio_np / max_val
 
-        sf.write(str(path), audio_np, sample_rate)
+        sf.write(str(path), audio_np, sr)
 
     @staticmethod
     def list_voices() -> dict[str, list[str]]:

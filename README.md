@@ -1,14 +1,15 @@
 # Kokoro TTS MLX
 
-A lightweight text-to-speech implementation of [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) for Apple Silicon using MLX.
+A clean, simple wrapper for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) text-to-speech on Apple Silicon.
+
+Built on top of [mlx-audio](https://github.com/Blaizzy/mlx-audio), this package provides a streamlined API for speech synthesis.
 
 ## Features
 
-- **82M parameter** TTS model - fast and efficient
-- **8 languages** - English (US/UK), Japanese, Chinese, Spanish, French, Hindi, Italian, Portuguese
-- **54 voice presets** - diverse male and female voices
-- **Apple Silicon optimized** - runs efficiently on M1/M2/M3 chips
-- **Simple API** - easy to use Python interface and CLI
+- **Simple API** - One class, one function, done
+- **82M parameters** - Fast and efficient
+- **50+ voices** - American/British English, Japanese, Chinese
+- **Apple Silicon optimized** - Runs efficiently on M1/M2/M3/M4
 
 ## Installation
 
@@ -19,19 +20,7 @@ cd kokoro_tts_mlx
 
 # Install with uv
 uv venv
-uv pip install -e ".[dev]"
-```
-
-### Dependencies
-
-- Python 3.10+
-- MLX
-- misaki (for G2P conversion)
-- espeak-ng (optional, for fallback phonemization)
-
-```bash
-# Install espeak-ng (macOS)
-brew install espeak-ng
+uv pip install -e .
 ```
 
 ## Quick Start
@@ -39,26 +28,28 @@ brew install espeak-ng
 ### Python API
 
 ```python
-from kokoro import from_pretrained
-from kokoro.processing.text import TextProcessor
-from kokoro.processing.voice import load_voice
-from kokoro.utils import save_audio
+from kokoro import KokoroTTS, synthesize
 
-# Load model
-model = from_pretrained()
+# Quick synthesis
+result = synthesize("Hello, world!", voice="af_heart", output="hello.wav")
 
-# Load a voice
-voice = load_voice("af_heart")
+# Or use the class for more control
+tts = KokoroTTS(voice="am_adam", lang="a")
+result = tts.synthesize("Welcome to Kokoro TTS!", speed=1.0)
+tts.save(result.audio, "welcome.wav")
 
-# Convert text to phonemes
-processor = TextProcessor(lang_code="a")  # American English
-phonemes = processor.phonemize("Hello, world!")
+print(f"Generated {result.duration_seconds:.2f}s of audio")
+```
 
-# Generate audio
-audio, durations = model(phonemes, voice, speed=1.0)
+### Streaming (for long texts)
 
-# Save to file
-save_audio(audio, "output.wav", sample_rate=model.sample_rate)
+```python
+tts = KokoroTTS()
+
+for segment in tts.stream("This is a long text that will be processed segment by segment..."):
+    # Process each segment as it's generated
+    print(f"Segment: {segment.duration_seconds:.2f}s")
+    # Play or save segment.audio
 ```
 
 ### Command Line
@@ -80,12 +71,12 @@ kokoro info
 ## Available Voices
 
 ### American English
-- **Female**: af_heart, af_bella, af_nova, af_sarah, af_nicole, af_sky
-- **Male**: am_adam, am_michael
+- **Female**: af_heart, af_bella, af_nova, af_sarah, af_nicole, af_sky, af_alloy, af_aoede, af_jessica, af_kore, af_river, af_sage
+- **Male**: am_adam, am_echo, am_eric, am_fenrir, am_liam, am_michael, am_onyx, am_puck
 
 ### British English
-- **Female**: bf_emma, bf_isabella
-- **Male**: bm_george, bm_lewis
+- **Female**: bf_emma, bf_isabella, bf_alice, bf_lily
+- **Male**: bm_george, bm_lewis, bm_daniel, bm_fable
 
 ### Japanese
 - **Female**: jf_alpha, jf_gongitsune
@@ -93,32 +84,68 @@ kokoro info
 
 ### Chinese
 - **Female**: zf_xiaobei, zf_xiaoni, zf_xiaoxuan
-- **Male**: zm_yunjian
+- **Male**: zm_yunjian, zm_yunxi, zm_yunyang
 
-## Architecture
+## API Reference
 
-Kokoro uses a decoder-only StyleTTS 2 architecture:
+### `KokoroTTS`
 
-1. **Text Encoder** - Converts phonemes to embeddings via LSTM
-2. **ALBERT** - Predicts duration from text embeddings
-3. **Prosody Predictor** - Predicts F0 (pitch) and noise components
-4. **ISTFTNet Vocoder** - Generates audio from acoustic features
+```python
+class KokoroTTS:
+    def __init__(
+        self,
+        model_id: str = "mlx-community/Kokoro-82M-bf16",
+        voice: str = "af_heart",
+        lang: str = "a",  # a=American, b=British, j=Japanese, z=Chinese
+    ): ...
 
+    def synthesize(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+    ) -> TTSResult: ...
+
+    def stream(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+    ) -> Generator[TTSResult, None, None]: ...
+
+    def save(
+        self,
+        audio: mx.array,
+        path: str | Path,
+        sample_rate: int | None = None,
+    ) -> None: ...
+
+    @staticmethod
+    def list_voices() -> dict[str, list[str]]: ...
 ```
-Text → Phonemes → Duration → F0/Noise → Audio
-           ↓           ↓
-       [ALBERT]   [Prosody]
-           ↓           ↓
-      [Text Encoder] → [ISTFTNet Decoder] → Waveform
+
+### `TTSResult`
+
+```python
+@dataclass
+class TTSResult:
+    audio: mx.array          # Audio waveform
+    sample_rate: int         # Sample rate (24000 Hz)
+    text: str                # Input text
+    phonemes: str | None     # Generated phonemes
+    duration_seconds: float  # Audio duration
 ```
 
-## Model Weights
+### `synthesize()` (convenience function)
 
-Uses pre-converted MLX weights from:
-- [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16)
-
-Original model:
-- [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)
+```python
+def synthesize(
+    text: str,
+    voice: str = "af_heart",
+    speed: float = 1.0,
+    output: str | Path | None = None,
+) -> TTSResult: ...
+```
 
 ## License
 
@@ -127,5 +154,5 @@ Apache 2.0
 ## Acknowledgments
 
 - [hexgrad](https://github.com/hexgrad) - Original Kokoro model
-- [Blaizzy/mlx-audio](https://github.com/Blaizzy/mlx-audio) - Reference MLX implementation
+- [Blaizzy/mlx-audio](https://github.com/Blaizzy/mlx-audio) - MLX implementation
 - [Apple MLX Team](https://github.com/ml-explore/mlx) - MLX framework

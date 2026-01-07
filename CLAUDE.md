@@ -4,108 +4,73 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-Kokoro TTS MLX is a text-to-speech implementation of the Kokoro-82M model for Apple Silicon using MLX. It provides both a Python API and CLI for speech synthesis.
+Kokoro TTS MLX is a clean wrapper around mlx-audio's Kokoro TTS implementation, providing a simple API for text-to-speech synthesis on Apple Silicon.
+
+## Architecture
+
+This project is a **thin wrapper** around mlx-audio, not a reimplementation:
+
+```
+kokoro_tts_mlx/
+├── src/kokoro/
+│   ├── __init__.py   # Public API exports
+│   ├── tts.py        # KokoroTTS wrapper class
+│   └── cli.py        # Typer CLI
+└── tests/
+```
+
+The heavy lifting is done by `mlx-audio`. This package provides:
+- Clean, simple API (`KokoroTTS` class)
+- Convenience functions (`synthesize()`)
+- CLI interface
 
 ## Development Setup
 
 ```bash
-# Create virtual environment
 uv venv
-
-# Install in editable mode with dev dependencies
 uv pip install -e ".[dev]"
 ```
 
-## Architecture
+## Key Components
 
-### Package Structure
-```
-src/kokoro/
-├── models/           # Model implementations
-│   └── kokoro.py     # Main KokoroTTS model
-├── layers/           # Neural network components
-│   ├── lstm.py       # Custom LSTM (MLX doesn't have built-in)
-│   ├── attention.py  # ALBERT attention layers
-│   ├── modules.py    # Text encoder, prosody predictor
-│   └── istftnet.py   # ISTFTNet vocoder
-├── processing/       # Text and audio processing
-│   ├── text.py       # G2P conversion (misaki)
-│   └── voice.py      # Voice loading from HuggingFace
-├── cli.py            # Typer CLI
-└── utils.py          # Model loading utilities
-```
+### `KokoroTTS` class (tts.py)
 
-### Key Components
+Main wrapper class that:
+- Lazily loads mlx-audio's Model and KokoroPipeline
+- Provides `synthesize()` for one-shot generation
+- Provides `stream()` for segment-by-segment generation
+- Handles audio saving via soundfile
 
-1. **KokoroTTS** (`models/kokoro.py`)
-   - Main model class
-   - Forward pass: phonemes + voice → audio
-   - Weight sanitization for PyTorch→MLX conversion
+### CLI (cli.py)
 
-2. **LSTM** (`layers/lstm.py`)
-   - Custom bidirectional LSTM implementation
-   - MLX doesn't have built-in LSTM, so we implement it
-
-3. **ALBERT** (`layers/attention.py`)
-   - Used for duration prediction
-   - Parameter sharing for efficiency
-
-4. **ISTFTNet** (`layers/istftnet.py`)
-   - Vocoder for audio generation
-   - Uses harmonic+noise source modeling
-
-5. **TextProcessor** (`processing/text.py`)
-   - G2P via misaki library
-   - Fallback to espeak-ng
+Typer-based CLI with commands:
+- `kokoro "text"` - Synthesize speech
+- `kokoro voices` - List voices
+- `kokoro info` - Show system info
 
 ## Commands
 
 ```bash
-# Run CLI
-kokoro "Hello world" -v af_heart -o output.wav
-
 # Run tests
 pytest tests/ -v
 
-# Type checking
-mypy src/kokoro
+# Synthesize speech
+kokoro "Hello world" -o output.wav
 
-# Linting
-ruff check src/
-ruff format src/
-```
-
-## Model Weights
-
-Default: `mlx-community/Kokoro-82M-bf16`
-
-The model config contains:
-- `vocab`: Phoneme→ID mapping
-- `plbert`: ALBERT configuration
-- `istftnet`: Vocoder configuration
-
-## Important Notes
-
-1. **LSTM Weight Conversion**: PyTorch LSTM weights need sanitization for MLX
-2. **Voice Embeddings**: 256-dim vectors (128 for decoder style, 128 for prosody)
-3. **G2P Dependencies**: Requires misaki[en] for English, misaki[ja] for Japanese, etc.
-4. **Sample Rate**: 24000 Hz (hardcoded in model)
-
-## Testing
-
-Tests are in `tests/`. Run with:
-```bash
-pytest tests/ -v
+# List voices
+kokoro --list-voices
 ```
 
 ## Dependencies
 
-Core:
-- mlx
-- huggingface-hub
-- safetensors
-- soundfile
-- misaki
+- `mlx-audio` - Backend TTS implementation
+- `soundfile` - Audio file I/O
+- `typer` - CLI framework
 
-Optional:
-- espeak-ng (system package for fallback G2P)
+## Design Decisions
+
+1. **Wrapper approach**: Rather than reimplementing 2000+ lines of complex audio processing code, we use mlx-audio as the backend. This ensures compatibility with pretrained weights and benefits from upstream improvements.
+
+2. **Lazy loading**: Model is only loaded when first needed, keeping imports fast.
+
+3. **Streaming support**: The `stream()` method allows processing long texts segment by segment, useful for real-time applications.
